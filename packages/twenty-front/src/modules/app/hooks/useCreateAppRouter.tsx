@@ -150,6 +150,12 @@ const StandalonePageLayoutPage = lazy(() =>
   })),
 );
 
+const FieldSalesPage = lazy(() =>
+  import('~/pages/field-sales/FieldSalesPage').then((module) => ({
+    default: module.FieldSalesPage,
+  })),
+);
+
 const NotFound = lazy(() =>
   import('~/pages/not-found/NotFound').then((module) => ({
     default: module.NotFound,
@@ -293,6 +299,14 @@ export const useCreateAppRouter = (
               element={
                 <LazyRoute>
                   <StandalonePageLayoutPage />
+                </LazyRoute>
+              }
+            />
+            <Route
+              path="/field-sales"
+              element={
+                <LazyRoute>
+                  <FieldSalesPage />
                 </LazyRoute>
               }
             />
