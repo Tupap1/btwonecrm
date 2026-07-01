@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { useQuery, useMutation } from '@apollo/client';
+import { useQuery, useMutation } from '@apollo/client/react';
+import { useCreateOneRecord } from '@/object-record/hooks/useCreateOneRecord';
 import { styled } from '@linaria/react';
 import { themeCssVariables } from 'twenty-ui/theme-constants';
 import {
@@ -380,10 +381,73 @@ const StyledOSRMOfflineWarning = styled.div`
   gap: 6px;
 `;
 
+const StyledMapControls = styled.div`
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+`;
+
+const StyledThemeButton = styled.button<{ active?: boolean }>`
+  background-color: ${props => props.active ? '#6366f1' : 'white'};
+  color: ${props => props.active ? 'white' : '#374151'};
+  border: 1px solid ${themeCssVariables.border.color.medium};
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: bold;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+  font-family: inherit;
+  &:hover {
+    background-color: ${props => props.active ? '#6366f1' : '#f9fafb'};
+    transform: translateY(-1px);
+  }
+  &:active {
+    transform: translateY(0);
+  }
+`;
+
+const StyledLocateButton = styled.button`
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  z-index: 1000;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background-color: white;
+  border: 1px solid ${themeCssVariables.border.color.medium};
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #374151;
+  transition: all 0.2s ease;
+  &:hover {
+    background-color: #f9fafb;
+    transform: scale(1.05);
+  }
+  &:active {
+    transform: scale(0.95);
+  }
+`;
+
 // --- COMPONENT IMPLEMENTATION ---
 
 interface LeafletWindow extends Window {
   L?: any;
+  tempMarker?: any;
+  latestClickCoords?: { lat: number; lng: number };
+  latestClickAddress?: string;
 }
 
 declare const window: LeafletWindow;
@@ -419,21 +483,36 @@ export const FieldSalesPage = () => {
   const [gpsCoords, setGpsCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [distanceVerification, setDistanceVerification] = useState<number | null>(null);
 
+  // Phase 2: Map Customizations, Contact Creation & Geolocation Start Point
+  const [mapTheme, setMapTheme] = useState<'apple-light' | 'dark' | 'satellite' | 'standard'>('apple-light');
+  const tileLayerRef = useRef<any>(null);
+  
+  const [isCreateContactModalOpen, setIsCreateContactModalOpen] = useState(false);
+  const [clickCoords, setClickCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [newContactName, setNewContactName] = useState('');
+  const [newContactEmail, setNewContactEmail] = useState('');
+  const [newContactPhone, setNewContactPhone] = useState('');
+  const [newContactType, setNewContactType] = useState<'PERSON' | 'COMPANY'>('PERSON');
+  const [newContactAddress, setNewContactAddress] = useState('');
+
+  const { createOneRecord: createPersonRecord } = useCreateOneRecord({ objectNameSingular: 'person' });
+  const { createOneRecord: createCompanyRecord } = useCreateOneRecord({ objectNameSingular: 'company' });
+
   // Fetch Companies & People from CRM dynamic store
   const { records: companiesData } = useFindManyRecords({ objectNameSingular: 'company' });
   const { records: peopleData } = useFindManyRecords({ objectNameSingular: 'person' });
 
   // Apollo queries/mutations
-  const { data: routesQueryData, refetch: refetchRoutes } = useQuery(GET_ROUTES);
-  const { data: coordsQueryData, refetch: refetchCoords } = useQuery(GET_ALL_STOP_COORDINATES);
+  const { data: routesQueryData, refetch: refetchRoutes } = useQuery<any>(GET_ROUTES);
+  const { data: coordsQueryData, refetch: refetchCoords } = useQuery<any>(GET_ALL_STOP_COORDINATES);
 
-  const [optimizeRouteMutation, { loading: optimizingLoading }] = useMutation(OPTIMIZE_ROUTE);
-  const [createRouteMutation] = useMutation(CREATE_ROUTE);
-  const [updateRouteMutation] = useMutation(UPDATE_ROUTE);
-  const [deleteRouteMutation] = useMutation(DELETE_ROUTE);
-  const [saveStopCoordsMutation] = useMutation(SAVE_STOP_COORDINATES);
-  const [checkInMutation, { loading: checkInLoading }] = useMutation(CHECK_IN);
-  const [checkOutMutation, { loading: checkOutLoading }] = useMutation(CHECK_OUT);
+  const [optimizeRouteMutation, { loading: optimizingLoading }] = useMutation<any>(OPTIMIZE_ROUTE);
+  const [createRouteMutation] = useMutation<any>(CREATE_ROUTE);
+  const [updateRouteMutation] = useMutation<any>(UPDATE_ROUTE);
+  const [deleteRouteMutation] = useMutation<any>(DELETE_ROUTE);
+  const [saveStopCoordsMutation] = useMutation<any>(SAVE_STOP_COORDINATES);
+  const [checkInMutation, { loading: checkInLoading }] = useMutation<any>(CHECK_IN);
+  const [checkOutMutation, { loading: checkOutLoading }] = useMutation<any>(CHECK_OUT);
 
   // Load Leaflet dynamically from CDN to avoid bundler dependency bugs with asset icons
   useEffect(() => {
@@ -492,23 +571,94 @@ export const FieldSalesPage = () => {
     setAvailableTargets(list);
   }, [companiesData, peopleData]);
 
-  // Map Initialization
+  // Map Initialization & Event Listeners
   useEffect(() => {
     if (!leafletLoaded || !document.getElementById('sales-map') || mapInstance) return;
 
     // Centered around New York City
     const map = window.L.map('sales-map').setView([40.7128, -74.006], 13);
-    window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    
+    // Set tile layer according to current mapTheme
+    const themeUrls = {
+      'apple-light': 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+      'dark': 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+      'satellite': 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      'standard': 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
+    };
+
+    const tileLayer = window.L.tileLayer(themeUrls[mapTheme], {
       maxZoom: 19,
       attribution: '© OpenStreetMap contributors',
     }).addTo(map);
 
+    tileLayerRef.current = tileLayer;
     setMapInstance(map);
+
+    // Click on map listener to drop a temporary pin and offer Contact Creation
+    map.on('click', async (e: any) => {
+      const { lat, lng } = e.latlng;
+      
+      // Remove previous temp marker if any
+      if (window.tempMarker) {
+        window.tempMarker.remove();
+      }
+
+      // Add temporary marker
+      const tempIcon = window.L.divIcon({
+        className: 'temp-marker',
+        html: `<div style="background-color: #ef4444; border: 2px solid white; border-radius: 50%; width: 14px; height: 14px; box-shadow: 0 0 8px rgba(239, 68, 68, 0.8);"></div>`,
+        iconSize: [14, 14],
+        iconAnchor: [7, 7]
+      });
+
+      const marker = window.L.marker([lat, lng], { icon: tempIcon }).addTo(map);
+      window.tempMarker = marker;
+
+      // Reverse geocode via Nominatim
+      let displayAddress = 'Fetching address...';
+      try {
+        const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`, {
+          headers: { 'Accept-Language': 'es,en' }
+        });
+        const data = await response.json();
+        displayAddress = data.display_name || `Location (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+      } catch (err) {
+        displayAddress = `Location (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+      }
+
+      const popupContent = `
+        <div style="font-family: sans-serif; padding: 4px; max-width: 200px; text-align: center;">
+          <h4 style="margin: 0 0 4px 0; font-size: 13px;">New Contact Location</h4>
+          <p style="margin: 0 0 8px 0; font-size: 11px; color: #666; word-break: break-word;">${displayAddress}</p>
+          <button id="btn-create-crm-contact" style="background-color: #6366f1; color: white; border: none; padding: 6px 12px; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 11px; width: 100%;">
+            Create Contact Here
+          </button>
+        </div>
+      `;
+
+      marker.bindPopup(popupContent).openPopup();
+      
+      window.latestClickCoords = { lat, lng };
+      window.latestClickAddress = displayAddress;
+    });
 
     return () => {
       if (map) map.remove();
     };
   }, [leafletLoaded]);
+
+  // Synchronize Map theme layer
+  useEffect(() => {
+    if (tileLayerRef.current) {
+      const themeUrls = {
+        'apple-light': 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+        'dark': 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+        'satellite': 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        'standard': 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
+      };
+      tileLayerRef.current.setUrl(themeUrls[mapTheme]);
+    }
+  }, [mapTheme]);
 
   // Visualizing markers & routing polyline whenever route stops update
   useEffect(() => {
@@ -528,42 +678,54 @@ export const FieldSalesPage = () => {
       points.push(latlng);
 
       // Create a numbered custom circle marker using raw Leaflet DOM
-      const color = stop.checkedInAt ? '#22c55e' : '#6366f1';
+      const isGpsStart = stop.id === 'gps-start-point';
+      const color = isGpsStart ? '#3b82f6' : (stop.checkedInAt ? '#22c55e' : '#6366f1');
       const htmlIcon = window.L.divIcon({
         className: 'custom-leaflet-marker',
-        html: `<div style="background-color: ${color}; color: white; border: 2px solid white; border-radius: 50%; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 12px; box-shadow: 0 2px 5px rgba(0,0,0,0.3);">${index + 1}</div>`,
-        iconSize: [28, 28],
-        iconAnchor: [14, 14],
+        html: isGpsStart 
+          ? `<div style="background-color: #3b82f6; border: 2px solid white; border-radius: 50%; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 10px rgba(59,130,246,0.8);"><div style="background-color: white; border-radius: 50%; width: 8px; height: 8px; animation: pulse 1.5s infinite;"></div></div>`
+          : `<div style="background-color: ${color}; color: white; border: 2px solid white; border-radius: 50%; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 12px; box-shadow: 0 2px 5px rgba(0,0,0,0.3);">${index + 1}</div>`,
+        iconSize: isGpsStart ? [20, 20] : [28, 28],
+        iconAnchor: isGpsStart ? [10, 10] : [14, 14],
       });
 
-      const popupHtml = `
-        <div style="font-family: sans-serif; padding: 4px; max-width: 220px;">
-          <h4 style="margin: 0 0 4px 0; font-size: 14px;">${stop.name}</h4>
-          <p style="margin: 0 0 8px 0; font-size: 11px; color: #666;">${stop.address}</p>
-          <div style="display: flex; flex-direction: column; gap: 4px;">
-            <button id="btn-popup-check-${stop.id}" style="background-color: #6366f1; color: white; border: none; padding: 6px 12px; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 11px;">
-              ${stop.checkedInAt ? 'Check-Out / Complete' : 'Check-In'}
-            </button>
-            <a href="https://www.google.com/maps/dir/?api=1&destination=${stop.latitude},${stop.longitude}" target="_blank" style="background-color: #f3f4f6; color: #333; text-decoration: none; border: none; padding: 6px 12px; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 11px; text-align: center; display: inline-block;">
-              Get Directions
-            </a>
+      const popupHtml = isGpsStart
+        ? `
+          <div style="font-family: sans-serif; padding: 4px; max-width: 200px;">
+            <h4 style="margin: 0 0 4px 0; font-size: 13px; color: #3b82f6;">Your Current Location</h4>
+            <p style="margin: 0 0 0 0; font-size: 11px; color: #666;">Start point of the active route</p>
           </div>
-        </div>
-      `;
+        `
+        : `
+          <div style="font-family: sans-serif; padding: 4px; max-width: 220px;">
+            <h4 style="margin: 0 0 4px 0; font-size: 14px;">${stop.name}</h4>
+            <p style="margin: 0 0 8px 0; font-size: 11px; color: #666;">${stop.address}</p>
+            <div style="display: flex; flex-direction: column; gap: 4px;">
+              <button id="btn-popup-check-${stop.id}" style="background-color: #6366f1; color: white; border: none; padding: 6px 12px; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 11px;">
+                ${stop.checkedInAt ? 'Check-Out / Complete' : 'Check-In'}
+              </button>
+              <a href="https://www.google.com/maps/dir/?api=1&destination=${stop.latitude},${stop.longitude}" target="_blank" style="background-color: #f3f4f6; color: #333; text-decoration: none; border: none; padding: 6px 12px; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 11px; text-align: center; display: inline-block;">
+                Get Directions
+              </a>
+            </div>
+          </div>
+        `;
 
       const marker = window.L.marker(latlng, { icon: htmlIcon })
         .addTo(mapInstance)
         .bindPopup(popupHtml);
 
       // Add event listener inside marker popup
-      marker.on('popupopen', () => {
-        const btn = document.getElementById(`btn-popup-check-${stop.id}`);
-        if (btn) {
-          btn.addEventListener('click', () => {
-            handleOpenCheckIn(stop);
-          });
-        }
-      });
+      if (!isGpsStart) {
+        marker.on('popupopen', () => {
+          const btn = document.getElementById(`btn-popup-check-${stop.id}`);
+          if (btn) {
+            btn.addEventListener('click', () => {
+              handleOpenCheckIn(stop);
+            });
+          }
+        });
+      }
 
       newMarkers.push(marker);
     });
@@ -620,6 +782,183 @@ export const FieldSalesPage = () => {
     }
   };
 
+  // Keep GPS start point locked at index 0 if it exists
+  const setRouteStopsAndNormalize = (stops: any[]) => {
+    const gpsIndex = stops.findIndex(s => s.id === 'gps-start-point');
+    if (gpsIndex > 0) {
+      const copy = [...stops];
+      const [gps] = copy.splice(gpsIndex, 1);
+      setRouteStops([gps, ...copy]);
+    } else {
+      setRouteStops(stops);
+    }
+  };
+
+  // Set Current Location as Start Stop
+  const handleSetGpsStart = () => {
+    if (!navigator.geolocation) {
+      alert('Geolocation is not supported by your browser');
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const { latitude, longitude } = position.coords;
+        let address = 'Current Geolocation coordinates';
+        try {
+          const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latitude}&lon=${longitude}`, {
+            headers: { 'Accept-Language': 'es,en' }
+          });
+          const data = await res.json();
+          address = data.display_name || `Location (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`;
+        } catch (e) {
+          // Fallback to location coordinates on geocoding error
+        }
+
+        const gpsStop = {
+          id: 'gps-start-point',
+          name: 'My Location',
+          address,
+          targetType: 'GPS',
+          latitude,
+          longitude,
+          checkedInAt: null,
+        };
+
+        setRouteStopsAndNormalize([gpsStop, ...routeStops.filter(s => s.id !== 'gps-start-point')]);
+
+        if (mapInstance) {
+          mapInstance.setView([latitude, longitude], 15);
+        }
+      },
+      (error) => {
+        alert('Unable to retrieve your location: ' + error.message);
+      },
+      { enableHighAccuracy: true }
+    );
+  };
+
+  // Reset/Clear Route Planner
+  const handleNewRoute = () => {
+    setSelectedRouteId('');
+    setCurrentRoute(null);
+    setRouteName('New Sales Route');
+    setRouteDate(new Date().toISOString().split('T')[0]);
+    setRouteStops([]);
+  };
+
+  // Close Contact Creation modal and clean up pins
+  const handleCancelCreateContact = () => {
+    setIsCreateContactModalOpen(false);
+    if (window.tempMarker) {
+      window.tempMarker.remove();
+      window.tempMarker = null;
+    }
+  };
+
+  // Create CRM Contact and save stop coordinates
+  const handleSaveContact = async () => {
+    if (!newContactName.trim() || !clickCoords) return;
+
+    try {
+      let createdRecordId = '';
+      if (newContactType === 'PERSON') {
+        const res = await createPersonRecord({
+          name: {
+            firstName: newContactName.split(' ')[0] || '',
+            lastName: newContactName.split(' ').slice(1).join(' ') || '',
+          },
+          emails: {
+            primaryEmail: newContactEmail || undefined,
+          },
+          phones: {
+            primaryPhoneNumber: newContactPhone || undefined,
+          },
+          address: {
+            addressStreet1: newContactAddress,
+            addressCity: 'New York',
+            addressState: 'NY',
+            addressPostcode: '10001',
+            addressCountry: 'US',
+            addressLat: clickCoords.lat,
+            addressLng: clickCoords.lng,
+          }
+        });
+        createdRecordId = res.id;
+      } else {
+        const res = await createCompanyRecord({
+          name: newContactName,
+          address: {
+            addressStreet1: newContactAddress,
+            addressCity: 'New York',
+            addressState: 'NY',
+            addressPostcode: '10001',
+            addressCountry: 'US',
+            addressLat: clickCoords.lat,
+            addressLng: clickCoords.lng,
+          }
+        });
+        createdRecordId = res.id;
+      }
+
+      // Save coordinates to stop planner database table
+      await saveStopCoordsMutation({
+        variables: {
+          input: {
+            targetId: createdRecordId,
+            targetType: newContactType,
+            latitude: clickCoords.lat,
+            longitude: clickCoords.lng,
+          }
+        }
+      });
+
+      await refetchCoords();
+
+      // Automatically append newly created contact stop to route list
+      const newStop = {
+        id: createdRecordId,
+        name: newContactName,
+        address: newContactAddress,
+        targetType: newContactType,
+        latitude: clickCoords.lat,
+        longitude: clickCoords.lng,
+        checkedInAt: null,
+      };
+
+      setRouteStopsAndNormalize([...routeStops, newStop]);
+
+      // Complete cleanup
+      setIsCreateContactModalOpen(false);
+      if (window.tempMarker) {
+        window.tempMarker.remove();
+        window.tempMarker = null;
+      }
+      setNewContactName('');
+      setNewContactEmail('');
+      setNewContactPhone('');
+      setNewContactAddress('');
+    } catch (err) {
+      console.error(err);
+      alert('Error creating CRM contact: ' + (err as Error).message);
+    }
+  };
+
+  // Listen for delegated click events on the map area for popup buttons
+  const handleMapAreaClick = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    if (target && target.id === 'btn-create-crm-contact') {
+      if (window.latestClickCoords) {
+        setClickCoords(window.latestClickCoords);
+        setNewContactAddress(window.latestClickAddress || '');
+        setIsCreateContactModalOpen(true);
+        if (window.tempMarker) {
+          window.tempMarker.closePopup();
+        }
+      }
+    }
+  };
+
   // Add stop to current Route Planner
   const handleAddStop = async () => {
     if (!selectedTargetId) return;
@@ -656,7 +995,7 @@ export const FieldSalesPage = () => {
       checkedInAt: null,
     };
 
-    setRouteStops([...routeStops, newStop]);
+    setRouteStopsAndNormalize([...routeStops, newStop]);
     setSelectedTargetId('');
   };
 
@@ -698,7 +1037,7 @@ export const FieldSalesPage = () => {
           }
         });
 
-        setRouteStops(reordered);
+        setRouteStopsAndNormalize(reordered);
 
         if (currentRoute) {
           setCurrentRoute({
@@ -731,7 +1070,7 @@ export const FieldSalesPage = () => {
         result.push(current);
         unvisited.splice(nearestIndex, 1);
       }
-      setRouteStops(result);
+      setRouteStopsAndNormalize(result);
     }
   };
 
@@ -944,15 +1283,26 @@ export const FieldSalesPage = () => {
           <StyledSectionCard>
             <StyledSectionTitle>
               Route Parameters
-              {selectedRouteId && (
+              <div style={{ display: 'flex', gap: '8px' }}>
                 <StyledButton
-                  onClick={handleDeleteRoute}
-                  variant="danger"
-                  style={{ width: 'auto', padding: '4px 8px' }}
+                  onClick={handleNewRoute}
+                  variant="secondary"
+                  style={{ width: 'auto', padding: '4px 8px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                  title="New Route"
                 >
-                  <IconTrash size={14} />
+                  <IconPlus size={14} /> New
                 </StyledButton>
-              )}
+                {selectedRouteId && (
+                  <StyledButton
+                    onClick={handleDeleteRoute}
+                    variant="danger"
+                    style={{ width: 'auto', padding: '4px 8px' }}
+                    title="Delete Route"
+                  >
+                    <IconTrash size={14} />
+                  </StyledButton>
+                )}
+              </div>
             </StyledSectionTitle>
             <StyledFormGroup>
               <StyledLabel>Select Saved Route</StyledLabel>
@@ -1087,9 +1437,130 @@ export const FieldSalesPage = () => {
         </StyledContentScroll>
       </StyledLeftPanel>
 
-      <StyledMapArea>
+      <StyledMapArea onClick={handleMapAreaClick}>
         <div id="sales-map" style={{ width: '100%', height: '100%', zIndex: 1 }} />
+
+        {/* Map theme switcher */}
+        <StyledMapControls>
+          <StyledThemeButton
+            active={mapTheme === 'apple-light'}
+            onClick={(e) => { e.stopPropagation(); setMapTheme('apple-light'); }}
+            title="Apple Light Map Style"
+          >
+            Light
+          </StyledThemeButton>
+          <StyledThemeButton
+            active={mapTheme === 'dark'}
+            onClick={(e) => { e.stopPropagation(); setMapTheme('dark'); }}
+            title="Dark Map Style"
+          >
+            Dark
+          </StyledThemeButton>
+          <StyledThemeButton
+            active={mapTheme === 'satellite'}
+            onClick={(e) => { e.stopPropagation(); setMapTheme('satellite'); }}
+            title="Satellite Map Style"
+          >
+            Satellite
+          </StyledThemeButton>
+          <StyledThemeButton
+            active={mapTheme === 'standard'}
+            onClick={(e) => { e.stopPropagation(); setMapTheme('standard'); }}
+            title="Standard OSM Map Style"
+          >
+            Standard
+          </StyledThemeButton>
+        </StyledMapControls>
+
+        {/* Floating locate current GPS start point button */}
+        <StyledLocateButton
+          onClick={(e) => { e.stopPropagation(); handleSetGpsStart(); }}
+          title="Start Route from My Location"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: 'rotate(-45deg)', color: '#3b82f6' }}>
+            <polygon points="3 11 22 2 13 21 11 13 3 11" fill="currentColor"/>
+          </svg>
+        </StyledLocateButton>
       </StyledMapArea>
+
+      {/* --- Create CRM Contact from Map dialog --- */}
+      {isCreateContactModalOpen && clickCoords && (
+        <StyledOverlay>
+          <StyledModal style={{ maxWidth: '400px' }}>
+            <StyledModalTitle>Create CRM Contact from Map</StyledModalTitle>
+            <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px', marginBottom: '16px' }}>
+              Lat: {clickCoords.lat.toFixed(5)}, Lng: {clickCoords.lng.toFixed(5)}
+            </div>
+
+            <StyledFormGroup>
+              <StyledLabel>Contact Type</StyledLabel>
+              <StyledSelect
+                value={newContactType}
+                onChange={e => setNewContactType(e.target.value as 'PERSON' | 'COMPANY')}
+              >
+                <option value="PERSON">Person (Individual Contact)</option>
+                <option value="COMPANY">Company (Business Contact)</option>
+              </StyledSelect>
+            </StyledFormGroup>
+
+            <StyledFormGroup>
+              <StyledLabel>Full Name / Company Name</StyledLabel>
+              <StyledInput
+                type="text"
+                placeholder="e.g. John Doe or Acme Corp"
+                value={newContactName}
+                onChange={e => setNewContactName(e.target.value)}
+              />
+            </StyledFormGroup>
+
+            {newContactType === 'PERSON' && (
+              <>
+                <StyledFormGroup>
+                  <StyledLabel>Email Address</StyledLabel>
+                  <StyledInput
+                    type="email"
+                    placeholder="john@example.com"
+                    value={newContactEmail}
+                    onChange={e => setNewContactEmail(e.target.value)}
+                  />
+                </StyledFormGroup>
+
+                <StyledFormGroup>
+                  <StyledLabel>Phone Number</StyledLabel>
+                  <StyledInput
+                    type="tel"
+                    placeholder="+1 555-0199"
+                    value={newContactPhone}
+                    onChange={e => setNewContactPhone(e.target.value)}
+                  />
+                </StyledFormGroup>
+              </>
+            )}
+
+            <StyledFormGroup>
+              <StyledLabel>Postal / Street Address</StyledLabel>
+              <StyledInput
+                type="text"
+                value={newContactAddress}
+                onChange={e => setNewContactAddress(e.target.value)}
+              />
+            </StyledFormGroup>
+
+            <StyledButtonGroup style={{ marginTop: '24px' }}>
+              <StyledButton onClick={handleCancelCreateContact} variant="secondary">
+                Cancel
+              </StyledButton>
+              <StyledButton
+                onClick={handleSaveContact}
+                variant="primary"
+                disabled={!newContactName.trim()}
+              >
+                Save & Add Stop
+              </StyledButton>
+            </StyledButtonGroup>
+          </StyledModal>
+        </StyledOverlay>
+      )}
 
       {/* --- CheckIn/CheckOut Modal dialog --- */}
       {isCheckInModalOpen && activeCheckInStop && (
