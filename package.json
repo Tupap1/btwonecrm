@@ -109,5 +109,9 @@
     "singleQuote": true,
     "trailingComma": "all",
     "endOfLine": "lf"
+  },
+  "dependencies": {
+    "axios": "^1.18.1",
+    "mysql2": "^3.22.5"
   }
 }
